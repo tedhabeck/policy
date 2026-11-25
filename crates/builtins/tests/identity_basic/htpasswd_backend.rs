@@ -16,7 +16,7 @@ use praxis_policy_builtins::plugins::identity_basic::ShaCryptVariant;
 
 use crate::support::{
     HtpasswdFile, ScriptedSource, argon2_line, bcrypt_line, config_for, services, sha_crypt_line,
-    sha_crypt_salted,
+    sha_crypt_salted, user,
 };
 
 // -----------------------------------------------------------------------------
@@ -60,7 +60,10 @@ async fn a_known_user_authenticates_and_a_wrong_password_does_not() {
     let dir = directory(&file).expect("the file loads");
     let svc = services();
 
-    let record = dir.lookup("alice", &svc).await.expect("the lookup answers");
+    let record = dir
+        .lookup(&user("alice"), &svc)
+        .await
+        .expect("the lookup answers");
     let record = record.expect("alice is in the file");
     assert!(
         dir.verify(
@@ -93,7 +96,10 @@ async fn an_argon2_user_authenticates_and_a_wrong_password_does_not() {
     let dir = directory(&file).expect("an argon2 file loads");
     let svc = services();
 
-    let record = dir.lookup("alice", &svc).await.expect("the lookup answers");
+    let record = dir
+        .lookup(&user("alice"), &svc)
+        .await
+        .expect("the lookup answers");
     let record = record.expect("alice is in the file");
     assert!(
         dir.verify(
@@ -130,7 +136,7 @@ async fn a_sha_crypt_user_authenticates_and_a_wrong_password_does_not() {
         let svc = services();
 
         let record = dir
-            .lookup("alice", &svc)
+            .lookup(&user("alice"), &svc)
             .await
             .expect("the lookup succeeds")
             .expect("alice is in the file");
@@ -174,7 +180,7 @@ async fn a_sha_crypt_directory_runs_a_sha_crypt_dummy_for_an_unknown_user() {
 
     let before = dir.dummy_runs();
     assert!(
-        dir.lookup("nobody", &svc)
+        dir.lookup(&user("nobody"), &svc)
             .await
             .expect("the lookup succeeds")
             .is_none(),
@@ -206,7 +212,7 @@ async fn an_unknown_user_runs_a_dummy_verification() {
         "no dummy has run before the first lookup"
     );
     let missing = dir
-        .lookup("nobody", &svc)
+        .lookup(&user("nobody"), &svc)
         .await
         .expect("the lookup answers");
     assert!(missing.is_none(), "there is no such user");
@@ -262,7 +268,7 @@ async fn a_non_nfc_stored_user_id_is_reachable_by_either_encoding() {
             spelling.nfc().collect()
         };
         assert!(
-            dir.lookup(&normalised, &svc)
+            dir.lookup(&user(&normalised), &svc)
                 .await
                 .expect("the lookup answers")
                 .is_some(),
@@ -392,7 +398,9 @@ async fn the_smallest_legal_refresh_interval_still_merges_a_burst_into_one_read(
         let dir = std::sync::Arc::clone(&dir);
         set.spawn(async move {
             let svc = services();
-            dir.lookup("alice", &svc).await.map(|found| found.is_some())
+            dir.lookup(&user("alice"), &svc)
+                .await
+                .map(|found| found.is_some())
         });
     }
     while let Some(joined) = set.join_next().await {
@@ -429,7 +437,8 @@ fn a_due_reload_runs_on_the_blocking_pool_not_the_async_worker() {
 
         let (squatter, release) = occupy_the_blocking_pool();
 
-        let mut due = Box::pin(dir.lookup("alice", &svc));
+        let alice = user("alice");
+        let mut due = Box::pin(dir.lookup(&alice, &svc));
         let first_poll = futures::poll!(&mut due);
         assert!(
             first_poll.is_pending(),
@@ -588,7 +597,10 @@ async fn a_revoked_user_stops_authenticating_after_a_reload() {
     let dir = directory(&file).expect("the file loads");
     let svc = services();
     assert!(
-        dir.lookup("bob", &svc).await.expect("answers").is_some(),
+        dir.lookup(&user("bob"), &svc)
+            .await
+            .expect("answers")
+            .is_some(),
         "bob is in the file before the revocation"
     );
 
@@ -596,11 +608,17 @@ async fn a_revoked_user_stops_authenticating_after_a_reload() {
     dir.reload().expect("the rewritten file loads");
 
     assert!(
-        dir.lookup("bob", &svc).await.expect("answers").is_none(),
+        dir.lookup(&user("bob"), &svc)
+            .await
+            .expect("answers")
+            .is_none(),
         "a record removed from the file must stop authenticating once reloaded"
     );
     assert!(
-        dir.lookup("alice", &svc).await.expect("answers").is_some(),
+        dir.lookup(&user("alice"), &svc)
+            .await
+            .expect("answers")
+            .is_some(),
         "and a record left in the file keeps authenticating"
     );
 }
@@ -616,7 +634,10 @@ async fn a_failed_reload_keeps_the_previous_index_serving() {
     assert!(err.contains("separator"), "{err}");
 
     assert!(
-        dir.lookup("alice", &svc).await.expect("answers").is_some(),
+        dir.lookup(&user("alice"), &svc)
+            .await
+            .expect("answers")
+            .is_some(),
         "the previous index must still serve after a failed reload"
     );
 }
@@ -633,7 +654,7 @@ async fn past_the_staleness_ceiling_lookups_report_unavailable_not_unknown() {
     file.unlink();
     tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
 
-    let outcome = dir.lookup("alice", &svc).await;
+    let outcome = dir.lookup(&user("alice"), &svc).await;
     assert!(
         matches!(
             outcome,
@@ -667,7 +688,7 @@ fn a_burst_after_an_idle_period_past_the_ceiling_waits_for_the_reload() {
         for _ in 0..16_u32 {
             let dir = std::sync::Arc::clone(&dir);
             set.spawn(async move {
-                dir.lookup("bob", &services())
+                dir.lookup(&user("bob"), &services())
                     .await
                     .map(|found| found.is_some())
             });
@@ -720,7 +741,7 @@ fn concurrent_verifications_beyond_the_cap_deny_rather_than_queue() {
         let dir = HtpasswdDirectory::new(config).expect("the file loads");
         let svc = services();
         let record = dir
-            .lookup("alice", &svc)
+            .lookup(&user("alice"), &svc)
             .await
             .expect("the lookup answers")
             .expect("alice is in the file");
@@ -779,7 +800,7 @@ fn dropping_a_verify_future_does_not_release_its_permit_early() {
         let dir = HtpasswdDirectory::new(config).expect("the file loads");
         let svc = services();
         let record = dir
-            .lookup("alice", &svc)
+            .lookup(&user("alice"), &svc)
             .await
             .expect("the lookup answers")
             .expect("alice is in the file");
@@ -850,7 +871,7 @@ fn a_burst_of_lookups_triggers_one_file_read() {
         for _ in 0..16_u32 {
             let dir = std::sync::Arc::clone(&dir);
             set.spawn(async move {
-                dir.lookup("alice", &services())
+                dir.lookup(&user("alice"), &services())
                     .await
                     .map(|found| found.is_some())
             });
@@ -910,7 +931,7 @@ async fn the_stored_hash_never_reaches_the_projected_fields() {
     let svc = services();
 
     let record = dir
-        .lookup("alice", &svc)
+        .lookup(&user("alice"), &svc)
         .await
         .expect("answers")
         .expect("alice exists");
@@ -938,12 +959,18 @@ async fn every_record_in_a_large_file_is_reachable() {
     for n in 0..500_u32 {
         let user_id = format!("user{n}");
         assert!(
-            dir.lookup(&user_id, &svc).await.expect("answers").is_some(),
+            dir.lookup(&user(&user_id), &svc)
+                .await
+                .expect("answers")
+                .is_some(),
             "{user_id} must be reachable, not only the first and last records"
         );
     }
     assert!(
-        dir.lookup("nobody", &svc).await.expect("answers").is_none(),
+        dir.lookup(&user("nobody"), &svc)
+            .await
+            .expect("answers")
+            .is_none(),
         "and a miss in a large file is still a miss"
     );
 }
@@ -1226,12 +1253,15 @@ async fn a_reload_onto_mixed_costs_is_refused_and_the_uniform_index_keeps_servin
          publish a half-applied one"
     );
     assert!(
-        dir.lookup("bob", &svc).await.expect("answers").is_none(),
+        dir.lookup(&user("bob"), &svc)
+            .await
+            .expect("answers")
+            .is_none(),
         "and the record from the refused file must not be reachable"
     );
 
     let retained = dir
-        .lookup("alice", &svc)
+        .lookup(&user("alice"), &svc)
         .await
         .expect("answers")
         .expect("the user from the accepted file must still be indexed");
@@ -1320,7 +1350,7 @@ async fn a_reload_onto_bcrypt_is_refused_under_a_ceiling_bcrypt_cannot_honour() 
     );
 
     let retained = dir
-        .lookup("alice", &svc)
+        .lookup(&user("alice"), &svc)
         .await
         .expect("answers")
         .expect("the user from the accepted file must still be indexed");
@@ -1362,7 +1392,10 @@ async fn revoking_every_user_publishes_the_empty_index_under_a_large_ceiling() {
     );
 
     assert!(
-        dir.lookup("alice", &svc).await.expect("answers").is_none(),
+        dir.lookup(&user("alice"), &svc)
+            .await
+            .expect("answers")
+            .is_none(),
         "the revoked user must be gone from the published index: a refused reload left the \
          previous one serving, so every revoked user kept authenticating until the staleness \
          ceiling elapsed -- a failure the caller sees as success"

@@ -307,6 +307,14 @@ pub fn password(plaintext: &str) -> BasicCredential {
         .expect("the fixture credential decodes")
 }
 
+/// A credential for `user_id`, for a directory lookup that reads only the
+/// user-id.
+pub fn user(user_id: &str) -> BasicCredential {
+    let encoded = b64(format!("{user_id}:pw").as_bytes());
+    extract_and_decode_with(&format!("Basic {encoded}"), CEILING, usize::MAX)
+        .expect("the fixture credential decodes")
+}
+
 // -----------------------------------------------------------------------------
 // Resolver test utilities
 // -----------------------------------------------------------------------------
@@ -388,6 +396,61 @@ pub async fn resolve_with_payload(
     let ext = Extensions::default();
     let mut ctx = PluginContext::default();
     <BasicIdentityResolver as HookHandler<IdentityHook>>::handle(resolver, payload, &ext, &mut ctx)
+        .await
+}
+
+/// The verification service URL the HTTP backend tests are served at.
+pub const VERIFY_URL: &str = "https://verify.example/v1/basic";
+
+/// A config block naming the HTTP backend, with `provider` merged over the
+/// URL.
+pub fn http_block(provider: serde_json::Value) -> serde_json::Value {
+    let mut merged = serde_json::json!({ "kind": "http", "url": VERIFY_URL });
+    if let (Some(base), serde_json::Value::Object(extra)) = (merged.as_object_mut(), provider) {
+        base.extend(extra);
+    }
+    serde_json::json!({
+        "realm": "ops",
+        "credential": { "kind": "header", "name": "Authorization" },
+        "provider": merged,
+    })
+}
+
+/// A fake verification service answering `status` and `body` to every call.
+pub fn verify_service(
+    status: u16,
+    body: &str,
+) -> std::sync::Arc<praxis_policy_core::http_testing::FakeTransport> {
+    std::sync::Arc::new(praxis_policy_core::http_testing::FakeTransport::new().json(
+        "verify.example",
+        status,
+        body,
+    ))
+}
+
+/// Run the resolver against `value` in `Authorization`, with `transport` as
+/// the host's HTTP transport.
+pub async fn resolve_over_http(
+    resolver: &praxis_policy_builtins::plugins::identity_basic::BasicIdentityResolver,
+    value: &str,
+    transport: std::sync::Arc<praxis_policy_core::http_testing::FakeTransport>,
+) -> praxis_policy_core::hooks::trait_def::PluginResult<praxis_policy_core::identity::IdentityPayload>
+{
+    use praxis_policy_builtins::plugins::identity_basic::BasicIdentityResolver;
+    use praxis_policy_core::context::PluginContext;
+    use praxis_policy_core::hooks::payload::Extensions;
+    use praxis_policy_core::hooks::trait_def::HookHandler;
+    use praxis_policy_core::identity::{IdentityHook, IdentityPayload, TokenSource};
+
+    let payload = IdentityPayload::new("", TokenSource::Basic).with_headers(
+        std::collections::HashMap::from([("authorization".to_owned(), value.to_owned())]),
+    );
+    let ext = Extensions {
+        http_transport: praxis_policy_core::host::HttpTransportSlot::installed(transport),
+        ..Default::default()
+    };
+    let mut ctx = PluginContext::default();
+    <BasicIdentityResolver as HookHandler<IdentityHook>>::handle(resolver, &payload, &ext, &mut ctx)
         .await
 }
 

@@ -10,7 +10,7 @@ use praxis_policy_builtins::plugins::identity_basic::{UserFileConfig, UserFileDi
 
 use crate::support::{
     UserYamlFile, argon2_at, bcrypt_line, cost_profile_of, denial_code, resolve_with_header,
-    resolver, services, user_file_block, user_file_config_for,
+    resolver, services, user, user_file_block, user_file_config_for,
 };
 
 // -----------------------------------------------------------------------------
@@ -62,7 +62,7 @@ async fn a_records_roles_and_teams_project_into_the_identity() {
     let svc = services();
 
     let record = dir
-        .lookup("alice", &svc)
+        .lookup(&user("alice"), &svc)
         .await
         .expect("the lookup answers")
         .expect("alice is in the file");
@@ -105,7 +105,7 @@ async fn neither_the_hash_nor_the_username_reaches_the_projected_fields() {
     let dir = directory(&file).expect("the file loads");
 
     let record = dir
-        .lookup("alice", &services())
+        .lookup(&user("alice"), &services())
         .await
         .expect("the lookup answers")
         .expect("alice is in the file");
@@ -270,7 +270,7 @@ async fn a_record_with_no_expiry_key_never_expires() {
     let dir = directory(&file).expect("a record with no expiry key loads");
 
     let record = dir
-        .lookup("alice", &services())
+        .lookup(&user("alice"), &services())
         .await
         .expect("the lookup answers")
         .expect("alice is in the file");
@@ -400,7 +400,7 @@ async fn a_non_nfc_stored_username_is_reachable_by_either_encoding() {
             spelling.nfc().collect()
         };
         assert!(
-            dir.lookup(&normalised, &svc)
+            dir.lookup(&user(&normalised), &svc)
                 .await
                 .expect("the lookup answers")
                 .is_some(),
@@ -550,7 +550,7 @@ async fn arbitrary_projectable_record_fields_are_accepted() {
     let dir = directory(&file).expect("arbitrary record fields must load");
 
     let record = dir
-        .lookup("alice", &services())
+        .lookup(&user("alice"), &services())
         .await
         .expect("the lookup answers")
         .expect("alice is in the file");
@@ -623,7 +623,7 @@ async fn no_reload_error_carries_stored_hash_material() {
          prompts an operator to notice. Got: {error}"
     );
     assert!(
-        dir.lookup("alice", &services())
+        dir.lookup(&user("alice"), &services())
             .await
             .expect("the lookup answers")
             .is_some(),
@@ -728,7 +728,7 @@ async fn a_miss_runs_the_same_cost_profile_as_every_hit() {
     );
 
     let missing = dir
-        .lookup("nobody", &svc)
+        .lookup(&user("nobody"), &svc)
         .await
         .expect("the lookup answers");
     assert!(missing.is_none(), "`nobody` is not in the file");
@@ -752,7 +752,7 @@ async fn an_empty_directory_still_runs_a_dummy_on_a_miss() {
     let svc = services();
 
     assert!(
-        dir.lookup("alice", &svc)
+        dir.lookup(&user("alice"), &svc)
             .await
             .expect("the lookup answers")
             .is_none(),
@@ -811,7 +811,7 @@ async fn a_reload_onto_mixed_costs_is_refused_and_the_uniform_index_keeps_servin
          reload"
     );
     assert!(
-        dir.lookup("bob", &services())
+        dir.lookup(&user("bob"), &services())
             .await
             .expect("the lookup answers")
             .is_none(),
@@ -910,7 +910,7 @@ async fn a_revoked_user_stops_authenticating_after_a_reload() {
     let svc = services();
 
     assert!(
-        dir.lookup("bob", &svc)
+        dir.lookup(&user("bob"), &svc)
             .await
             .expect("the lookup answers")
             .is_some(),
@@ -924,7 +924,7 @@ async fn a_revoked_user_stops_authenticating_after_a_reload() {
     dir.reload().expect("the reload lands");
 
     assert!(
-        dir.lookup("bob", &svc)
+        dir.lookup(&user("bob"), &svc)
             .await
             .expect("the lookup answers")
             .is_none(),
@@ -946,7 +946,7 @@ async fn a_failed_reload_keeps_the_previous_index_serving() {
         .expect_err("a reload of a deleted file must fail");
 
     assert!(
-        dir.lookup("alice", &services())
+        dir.lookup(&user("alice"), &services())
             .await
             .expect("the lookup answers")
             .is_some(),
@@ -971,7 +971,7 @@ async fn past_the_staleness_ceiling_lookups_report_unavailable_not_unknown() {
     file.unlink();
     tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
 
-    let outcome = dir.lookup("alice", &services()).await;
+    let outcome = dir.lookup(&user("alice"), &services()).await;
     assert!(
         matches!(
             outcome,
@@ -1047,7 +1047,7 @@ async fn a_burst_of_lookups_triggers_one_file_read() {
     for _ in 0..16 {
         let dir = std::sync::Arc::clone(&dir);
         handles.push(tokio::spawn(async move {
-            let _ = dir.lookup("alice", &services()).await;
+            let _ = dir.lookup(&user("alice"), &services()).await;
         }));
     }
     for handle in handles {
@@ -1081,7 +1081,7 @@ async fn a_burst_after_an_idle_period_past_the_ceiling_waits_for_the_reload() {
     for _ in 0..16 {
         let dir = std::sync::Arc::clone(&dir);
         handles.push(tokio::spawn(async move {
-            dir.lookup("alice", &services())
+            dir.lookup(&user("alice"), &services())
                 .await
                 .map(|found| found.is_some())
         }));
@@ -1118,7 +1118,7 @@ async fn concurrent_verifications_beyond_the_cap_deny_rather_than_queue() {
     let svc = services();
 
     let record = dir
-        .lookup("alice", &svc)
+        .lookup(&user("alice"), &svc)
         .await
         .expect("the lookup answers")
         .expect("alice is in the file");
@@ -1226,7 +1226,7 @@ async fn the_documented_user_file_loads_and_authenticates_once_its_hashes_are_mi
     let svc = services();
 
     let record = dir
-        .lookup("alice", &svc)
+        .lookup(&user("alice"), &svc)
         .await
         .expect("the lookup answers")
         .expect("alice is in the documented file");

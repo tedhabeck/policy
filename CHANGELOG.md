@@ -75,6 +75,20 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
   ([#313](https://github.com/praxis-proxy/policy/pull/313),
   [#340](https://github.com/praxis-proxy/policy/pull/340))
 
+- **Delegated Basic verification.** `identity/basic` gains an `http`
+  provider that sends the user-id and password as separate JSON fields to a
+  verification service and projects its answer. The URL must be HTTPS unless
+  `allow_cleartext` is set, redirects are not followed, and `ca_bundle`,
+  `client_cert` and `client_key` are refused because the host transport owns
+  TLS. `service_auth` presents a declared secret to the service, read through
+  `read_secret:<name>`; startup fails without the grant, and a missing or
+  empty value sends nothing. An optional `cache` reuses answers under a keyed
+  MAC of the credential, with separate positive and negative TTLs and
+  ceilings; the positive TTL is the revocation window. A service `expires_at`
+  is enforced, and a malformed one denies as `auth.directory_unavailable`.
+  `CredentialDirectory::lookup` now takes the decoded `BasicCredential`
+  rather than the user-id, and the trait gains a defaulted `initialize`.
+
 [RFC 7617]: https://datatracker.ietf.org/doc/html/rfc7617
 [What Basic asks of the host]: docs/content/reference/builtins.md#what-basic-asks-of-the-host
 

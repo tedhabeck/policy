@@ -9,6 +9,8 @@
 //!
 //! [RFC 7617 Section 4]: https://datatracker.ietf.org/doc/html/rfc7617#section-4
 
+/// Reuse of a delegating directory's answers.
+pub mod cache;
 /// Plugin configuration and its validation.
 pub mod config;
 /// The RFC 7617 decode step and the credential types it produces.
@@ -23,6 +25,8 @@ pub mod failure_limit;
 pub mod file_backend;
 /// The `.htpasswd` backend.
 pub mod htpasswd;
+/// The delegated-verification backend.
+pub mod http_directory;
 /// Record fields onto the identity slots.
 pub mod record_map;
 /// The identity hook handler.
@@ -32,6 +36,7 @@ pub mod user_file;
 /// Stored-hash admission and password verification.
 pub mod verifier;
 
+pub use cache::{CacheConfig, CachingDirectory};
 pub use config::{
     BasicResolverConfig, CredentialLimits, ExpiryPolicy, FailureLimitConfig, ProviderConfig,
 };
@@ -40,6 +45,7 @@ pub use directory::{CredentialDirectory, DirectoryError, StoredVerifier, UserRec
 pub use factory::{BasicIdentityFactory, KIND};
 pub use failure_limit::{FailureLimiter, RecoveryLease, Refusal};
 pub use htpasswd::{HtpasswdConfig, HtpasswdDirectory};
+pub use http_directory::{HttpUserConfig, HttpUserDirectory, ServiceAuthConfig};
 pub use praxis_policy_core::extensions::raw_credentials::Credential;
 pub use resolver::{BasicIdentityResolver, codes};
 pub use user_file::{UserFileConfig, UserFileDirectory};

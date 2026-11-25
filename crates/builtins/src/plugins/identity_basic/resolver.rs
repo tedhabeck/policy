@@ -21,10 +21,12 @@ use praxis_policy_core::error::{PluginError, PluginViolation};
 use praxis_policy_core::extensions::raw_credentials::TokenRole;
 use praxis_policy_core::hooks::payload::Extensions;
 use praxis_policy_core::hooks::trait_def::{HookHandler, PluginResult};
+use praxis_policy_core::host::InitExtensions;
 use praxis_policy_core::identity::mapping::{ClaimMapper as _, ConfiguredClaimMap};
 use praxis_policy_core::identity::{IdentityHook, IdentityPayload};
 use praxis_policy_core::plugin::{OnError, Plugin, PluginConfig, PluginMode};
 
+use crate::plugins::identity_basic::cache::CachingDirectory;
 use crate::plugins::identity_basic::config::{BasicResolverConfig, ProviderConfig};
 use crate::plugins::identity_basic::credential::{
     CredentialLocation, DecodeError, ExtractionError, decode_basic,
@@ -32,6 +34,7 @@ use crate::plugins::identity_basic::credential::{
 use crate::plugins::identity_basic::directory::{CredentialDirectory, DirectoryError};
 use crate::plugins::identity_basic::failure_limit::{FailureLimiter, Refusal};
 use crate::plugins::identity_basic::htpasswd::HtpasswdDirectory;
+use crate::plugins::identity_basic::http_directory::HttpUserDirectory;
 use crate::plugins::identity_basic::record_map::USER_ID_FIELD;
 use crate::plugins::identity_basic::user_file::UserFileDirectory;
 
@@ -167,6 +170,7 @@ impl BasicIdentityResolver {
         let verification_capacity = match &settings.provider {
             ProviderConfig::Htpasswd(htpasswd) => htpasswd.max_concurrent_verifications,
             ProviderConfig::UserFile(users) => users.max_concurrent_verifications,
+            ProviderConfig::Http(service) => service.max_concurrent_verifications,
         };
 
         let directory: Arc<dyn CredentialDirectory> = match &settings.provider {
@@ -197,6 +201,19 @@ impl BasicIdentityResolver {
                     message: format!("{}: {e}", config.name),
                 })?;
                 Arc::new(loaded)
+            },
+            ProviderConfig::Http(service) => {
+                let config_error = |e: String| PluginError::Config {
+                    message: format!("{}: `provider`: {e}", config.name),
+                };
+                let delegated: Arc<dyn CredentialDirectory> =
+                    Arc::new(HttpUserDirectory::new(service.clone()).map_err(config_error)?);
+                match &service.cache {
+                    Some(cache) => Arc::new(
+                        CachingDirectory::new(delegated, cache.clone()).map_err(config_error)?,
+                    ),
+                    None => delegated,
+                }
             },
         };
 
@@ -314,6 +331,16 @@ impl BasicIdentityResolver {
 impl Plugin for BasicIdentityResolver {
     fn config(&self) -> &PluginConfig {
         &self.config
+    }
+
+    /// Hand the directory what it needs from the host, such as the secret a
+    /// delegating backend presents to its service.
+    async fn initialize_with(&self, ext: &InitExtensions) -> Result<(), Box<PluginError>> {
+        self.directory.initialize(ext).map_err(|e| {
+            Box::new(PluginError::Config {
+                message: format!("{}: {e}", self.config.name),
+            })
+        })
     }
 }
 
@@ -443,7 +470,7 @@ impl HookHandler<IdentityHook> for BasicIdentityResolver {
         };
         let unproven = admission.is_unproven();
 
-        let record = match self.directory.lookup(user_id, ext).await {
+        let record = match self.directory.lookup(&credential, ext).await {
             Ok(found) => found,
             Err(error) => return self.deny_directory(&error),
         };
@@ -498,10 +525,10 @@ impl HookHandler<IdentityHook> for BasicIdentityResolver {
             return self.deny_invalid();
         };
 
-        // Reachable only through a backend with a native expiry field, which
-        // is the YAML one: `.htpasswd` has nowhere to put a date, so a
-        // directory on that format never sets `expires_at` and this branch
-        // never fires for it. Enforced here rather than in each backend
+        // Reachable only through a backend with an expiry field: the YAML one,
+        // or a service that answers with one. `.htpasswd` has nowhere to put
+        // a date, so this branch never fires for it. A cached delegated answer
+        // reaches it on every reuse. Enforced here rather than in each backend
         // because R25 admits no mode that delegates expiry to the directory,
         // and one check is one place for that to be true.
         if let Some(expires_at) = record.expires_at

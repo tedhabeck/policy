@@ -138,7 +138,9 @@ for it.
 Two on-disk providers ship, and they differ in what a record can carry
 rather than in how they verify one. Both index by user-id, admit the same
 four schemes, enforce one cost profile per file, and share the refresh
-window and staleness ceiling described below.
+window and staleness ceiling described below. A third provider, `http`,
+keeps no records and asks a service instead: see
+[Delegating verification over HTTP](#delegating-verification-over-http).
 
 One cost profile means every parameter that changes verification time
 matches across records: the bcrypt cost, every argon2 parameter, or the
@@ -261,6 +263,90 @@ The file holds hashes, never plaintext, so a copy that leaks hands over no
 usable credential. It is still an offline-crackable verifier: it must not be
 world-readable, and PPE never writes to it. Re-hashing and rotation belong
 to whatever tool owns your directory.
+
+### Delegating verification over HTTP
+
+The `http` provider keeps no records. It sends each credential to a
+verification service and uses the answer as the record:
+
+<!-- validate: fragment -->
+
+```yaml
+secrets:
+  providers:
+    local: { kind: file, base_dir: /etc/ppe }
+  values:
+    verifier_token: { provider: local, ref: verifier.token }
+
+plugins:
+  - name: ops-basic
+    kind: identity/basic
+    hooks: [identity.resolve]
+    capabilities: [perform_http, read_secret:verifier_token]
+    config:
+      realm: "ops"
+      credential:
+        kind: header
+        name: Authorization
+      provider:
+        kind: http
+        url: https://verify.internal/v1/basic
+        service_auth:
+          secret: verifier_token
+          prefix: "Bearer "
+        cache:
+          ttl_secs: 30
+          negative_ttl_secs: 5
+      record_map:
+        subject:
+          id: user_id
+          roles: roles
+```
+
+The request is a `POST` of `{"user_id": "...", "password": "..."}`, two
+separate fields named by `user_id_field` and `password_field`. The service
+answers `200` with a JSON object whose `valid` field (`valid_field`) is a
+boolean. `valid: false` denies as `auth.invalid_credentials`, the same code
+as a wrong password on a file provider. On `valid: true`, every other field
+is projected through `record_map`, except `valid`, `reason`, the two request
+fields and `expires_at` (`expires_at_field`). An `expires_at` must be an
+RFC 3339 timestamp and is enforced on every request, including a cached one.
+
+Anything else denies as `auth.directory_unavailable` and is never cached:
+a status other than `200`, a body that is not an object, a missing or
+non-boolean verdict, an unreadable `expires_at`, a body over 64 KiB, a
+timeout, or a full `max_concurrent_verifications` (default 32). A redirect
+is one of those failures. It is not followed, because following it would
+send the password to whatever host the `Location` names.
+
+The provider is stricter than the API-key HTTP backend, because it sends a
+reusable password and the answer is the whole trust decision:
+
+- The URL must be `https://`. `allow_cleartext: true` admits `http://`, for
+  a loopback or otherwise protected link only.
+- TLS trust roots and client certificates belong to the host transport.
+  `ca_bundle`, `client_cert` and `client_key` are refused at load rather
+  than accepted and ignored. Mutual TLS to the service is the host's to
+  configure.
+- `service_auth` sends a declared secret in `header` (default
+  `authorization`) after `prefix`. The entry must grant
+  `read_secret:<secret>`, or startup fails naming the capability to add. A
+  value that is empty at request time denies, and the password is not sent.
+
+The service owns two properties Policy cannot check from its side of the
+transport. It must spend the same work on an unknown user as on a wrong
+password, or its response time tells a caller which user-ids exist. It must
+also apply its own failure limit, since `failure_limit` here is per process.
+
+`cache` is optional. `ttl_secs` is the revocation window: a password changed
+or a user disabled at the service keeps working here until the entry
+expires. `negative_ttl_secs` (default 0, off) remembers a refusal, and only
+absorbs repeats of one identical guess, since every new password is a new
+key. `max_entries` and `max_negative_entries` (default 10,000 each) bound the
+two maps separately, and a full map stops caching rather than evicting a
+live entry. Entries are keyed by HMAC-SHA-256 under a per-process random
+key, so the cache holds no digest of a password that could be cracked
+offline.
 
 ### Advertising `charset="UTF-8"`
 

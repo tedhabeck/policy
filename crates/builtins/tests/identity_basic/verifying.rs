@@ -409,14 +409,14 @@ struct OutOfTreeDirectory {
 impl praxis_policy_builtins::plugins::identity_basic::CredentialDirectory for OutOfTreeDirectory {
     async fn lookup(
         &self,
-        user_id: &str,
+        credential: &praxis_policy_builtins::plugins::identity_basic::BasicCredential,
         _services: &dyn praxis_policy_core::host::HostServices,
     ) -> Result<
         Option<praxis_policy_builtins::plugins::identity_basic::UserRecord>,
         praxis_policy_builtins::plugins::identity_basic::DirectoryError,
     > {
         use praxis_policy_builtins::plugins::identity_basic::{StoredVerifier, UserRecord};
-        Ok((user_id == self.expected_user)
+        Ok((credential.user_id() == self.expected_user)
             .then(|| UserRecord::verifier_only(StoredVerifier::Delegated { valid: true })))
     }
 
@@ -452,7 +452,10 @@ async fn the_directory_trait_is_implementable_from_outside_the_plugin() {
     };
     let svc = crate::support::services();
 
-    let found = dir.lookup("alice", &svc).await.expect("the lookup answers");
+    let found = dir
+        .lookup(&crate::support::user("alice"), &svc)
+        .await
+        .expect("the lookup answers");
     assert!(found.is_some(), "a public-API backend can return a record");
     assert!(
         dir.verify(found.as_ref(), &crate::support::password("pw"), &svc)
@@ -481,7 +484,7 @@ impl praxis_policy_builtins::plugins::identity_basic::CredentialDirectory
 {
     async fn lookup(
         &self,
-        user_id: &str,
+        credential: &praxis_policy_builtins::plugins::identity_basic::BasicCredential,
         _services: &dyn praxis_policy_core::host::HostServices,
     ) -> Result<
         Option<praxis_policy_builtins::plugins::identity_basic::UserRecord>,
@@ -491,7 +494,7 @@ impl praxis_policy_builtins::plugins::identity_basic::CredentialDirectory
             DirectoryError, StoredVerifier, UserRecord,
         };
 
-        if user_id != self.user_id {
+        if credential.user_id() != self.user_id {
             return Ok(None);
         }
         let verifier = StoredVerifier::hash(&self.stored, &Limits::default())
@@ -535,7 +538,10 @@ async fn an_out_of_tree_backend_round_trips_its_own_stored_hash() {
     };
     let svc = crate::support::services();
 
-    let found = dir.lookup("alice", &svc).await.expect("the lookup answers");
+    let found = dir
+        .lookup(&crate::support::user("alice"), &svc)
+        .await
+        .expect("the lookup answers");
     assert!(
         found.is_some(),
         "a backend outside this plugin must be able to admit its own stored \
@@ -563,7 +569,7 @@ async fn an_out_of_tree_backend_round_trips_its_own_stored_hash() {
         "while a wrong password still fails"
     );
     assert!(
-        dir.lookup("bob", &svc)
+        dir.lookup(&crate::support::user("bob"), &svc)
             .await
             .expect("the lookup answers")
             .is_none(),

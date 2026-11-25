@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use praxis_policy_core::host::HostServices;
+use praxis_policy_core::host::{HostServices, InitExtensions};
 use serde_json::Value;
 
 use super::BasicCredential;
@@ -49,7 +49,7 @@ use super::verifier::{HashError, Limits, ParsedHash, parse_hash};
 /// ```
 ///
 /// [`verify_against`]: UserRecord::verify_against
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct UserRecord {
     /// Projectable subject attributes, excluding storage and lifecycle fields.
@@ -175,13 +175,18 @@ pub enum DirectoryError {
 /// A backend for user lookup and password verification.
 #[async_trait::async_trait]
 pub trait CredentialDirectory: std::fmt::Debug + Send + Sync {
-    /// Look up an NFC-normalised user-id, returning `None` for an unknown user.
+    /// Look up the credential's NFC-normalised user-id, returning `None` for
+    /// an unknown user.
     ///
-    /// Backends must normalise stored user-ids identically and use indexed lookup.
-    /// `services` supplies host capabilities to backends requiring egress.
+    /// Backends must normalise stored user-ids identically and use indexed
+    /// lookup. The whole credential is passed because a delegating backend
+    /// cannot find a record without the password: the service it asks answers
+    /// for the pair, and its record already carries the verdict. A local
+    /// backend reads only [`BasicCredential::user_id`]. `services` supplies
+    /// host capabilities to backends requiring egress.
     async fn lookup(
         &self,
-        user_id: &str,
+        credential: &BasicCredential,
         services: &dyn HostServices,
     ) -> Result<Option<UserRecord>, DirectoryError>;
 
@@ -223,6 +228,19 @@ pub trait CredentialDirectory: std::fmt::Debug + Send + Sync {
         let verdict = self.verify(record, credential, services).await;
         drop(lease);
         verdict
+    }
+
+    /// Take what this backend needs from the host before the first request,
+    /// such as a secret its entry is granted.
+    ///
+    /// Called once, from the resolver's `initialize_with`. The default needs
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// A message naming what the host withheld, which fails startup.
+    fn initialize(&self, _ext: &InitExtensions) -> Result<(), String> {
+        Ok(())
     }
 
     /// A name for this backend, for diagnostics and the effect log.

@@ -16,10 +16,12 @@
     reason = "test and example code"
 )]
 
+mod caching;
 mod challenge;
 mod decoding;
 mod engine_e2e;
 mod htpasswd_backend;
+mod http_backend;
 mod projection;
 mod user_file_backend;
 mod verifying;

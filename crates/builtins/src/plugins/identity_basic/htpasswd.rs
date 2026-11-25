@@ -394,10 +394,10 @@ impl CredentialDirectory for HtpasswdDirectory {
     /// Look up a user in the file index without requiring host egress capabilities.
     async fn lookup(
         &self,
-        user_id: &str,
+        credential: &BasicCredential,
         _services: &dyn HostServices,
     ) -> Result<Option<UserRecord>, DirectoryError> {
-        self.backend.lookup(user_id).await
+        self.backend.lookup(credential.user_id()).await
     }
 
     async fn verify(

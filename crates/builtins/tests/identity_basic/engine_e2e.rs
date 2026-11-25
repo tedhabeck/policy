@@ -251,3 +251,134 @@ async fn an_expired_yaml_record_denies_through_the_engine() {
         "expiry is its own code: the credential was correct and the record is over, which is          a different operator action from a wrong password"
     );
 }
+
+/// Drive one request through an engine loaded from a document whose
+/// `identity/basic` entry delegates to `transport` and presents the declared
+/// `verifier_token`.
+async fn invoke_delegated_through_engine(
+    transport: Arc<praxis_policy_core::http_testing::FakeTransport>,
+    capabilities: &str,
+    header: &str,
+) -> Result<PipelineResult, String> {
+    use praxis_policy_builtins::plugins::identity_basic::BasicIdentityFactory;
+    use praxis_policy_core::config::parse_config;
+    use praxis_policy_core::engine::PolicyEngine;
+    use praxis_policy_core::secrets::SecretProviderRegistry;
+
+    let dir = std::env::temp_dir().join(format!("ppe-basic-http-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("verifier.token"), "s3rvice\n").map_err(|e| e.to_string())?;
+    let yaml = format!(
+        "
+engine_settings:
+  dispatch: hooks
+secrets:
+  providers:
+    local: {{ kind: file, base_dir: {dir} }}
+  values:
+    verifier_token: {{ provider: local, ref: verifier.token }}
+plugins:
+  - name: ops-basic
+    kind: identity/basic
+    hooks: [identity.resolve]
+    mode: sequential
+    capabilities: {capabilities}
+    config:
+      realm: ops
+      credential: {{ kind: header, name: Authorization }}
+      provider:
+        kind: http
+        url: {url}
+        service_auth: {{ secret: verifier_token, prefix: 'Bearer ' }}
+",
+        dir = dir.display(),
+        url = crate::support::VERIFY_URL,
+    );
+
+    let engine = Arc::new(PolicyEngine::default());
+    engine.set_secret_providers(SecretProviderRegistry::with_builtin_backends());
+    engine.register_factory(KIND, Box::new(BasicIdentityFactory));
+    engine.set_http_transport(transport);
+    engine
+        .load_config(parse_config(&yaml).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let initialized = engine.initialize().await.map_err(|e| e.to_string());
+    std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    initialized?;
+
+    let payload = IdentityPayload::new("", TokenSource::Basic).with_headers(
+        std::collections::HashMap::from([("authorization".to_owned(), header.to_owned())]),
+    );
+    let (result, _background) = engine
+        .invoke_named::<IdentityHook>(HOOK_IDENTITY_RESOLVE, payload, Extensions::default(), None)
+        .await;
+    Ok(result)
+}
+
+#[tokio::test]
+async fn a_delegated_verdict_resolves_through_the_engine_with_the_service_credential()
+-> Result<(), String> {
+    let transport = crate::support::verify_service(200, r#"{"valid": true, "team": "platform"}"#);
+
+    let result = invoke_delegated_through_engine(
+        Arc::clone(&transport),
+        "[perform_http, read_secret:verifier_token]",
+        &basic_header("alice", "pw"),
+    )
+    .await?;
+
+    let identity = IdentityPayload::from_pipeline_result(&result)
+        .ok_or_else(|| format!("no identity: {:?}", result.violation))?;
+    assert_eq!(
+        identity.subject.as_ref().and_then(|s| s.id.as_deref()),
+        Some("alice"),
+        "the service's verdict resolves the subject"
+    );
+    let sent = transport.last_request().ok_or("nothing was sent")?;
+    assert_eq!(
+        sent.headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok()),
+        Some("Bearer s3rvice"),
+        "the declared secret is presented to the service"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_delegated_refusal_denies_through_the_engine() -> Result<(), String> {
+    let transport = crate::support::verify_service(200, r#"{"valid": false}"#);
+
+    let result = invoke_delegated_through_engine(
+        transport,
+        "[perform_http, read_secret:verifier_token]",
+        &basic_header("alice", "wrong"),
+    )
+    .await?;
+
+    assert!(!result.continue_processing, "a refusal stops the pipeline");
+    assert_eq!(
+        result.violation.as_ref().map(|v| v.code.as_str()),
+        Some("auth.invalid_credentials")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_ungranted_service_credential_stops_startup() {
+    let transport = crate::support::verify_service(200, r#"{"valid": true}"#);
+
+    let error = invoke_delegated_through_engine(
+        Arc::clone(&transport),
+        "[perform_http]",
+        &basic_header("alice", "pw"),
+    )
+    .await
+    .expect_err("startup must fail without the grant");
+
+    assert!(
+        error.contains("read_secret:verifier_token"),
+        "the error names the grant to add, got: {error}"
+    );
+    assert_eq!(transport.call_count(), 0, "nothing was sent");
+}
